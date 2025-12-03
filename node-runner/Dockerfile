@@ -5,6 +5,5 @@ WORKDIR /runner
 COPY package*.json ./
 RUN npm install
 
-COPY run.js /runner/run.js
-
-CMD ["node", "run.js"]
+COPY app.js /runner/app.js
+CMD ["node", "app.js"]
