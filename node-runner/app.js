@@ -52,7 +52,7 @@ async function uploadLog(key, content) {
 }
 
 // 실행 핸들러
-app.get("/run", async (req, res) => {
+app.get("/node/run", async (req, res) => {
   const codeKey = req.query.code_key;
   if (!codeKey) {
     return res.status(400).json({ error: "Missing code_key" });

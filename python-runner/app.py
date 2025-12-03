@@ -57,7 +57,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"RUNNER READY")
             return
 
-        if self.path.startswith("/run"):
+        if self.path.startswith("/python/run"):
             query = parse_qs(urlparse(self.path).query)
             code_key = query.get("code_key", [None])[0]
 
