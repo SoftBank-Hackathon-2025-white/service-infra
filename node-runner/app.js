@@ -15,7 +15,13 @@ const AWS_REGION = process.env.AWS_REGION;
 AWS.config.update({ region: AWS_REGION });
 const s3 = new AWS.S3();
 
+// --------------------------------
+// 🔥 헬스체크 (로그 출력 추가)
+// --------------------------------
 app.get("/health", (req, res) => {
+  const now = new Date().toISOString();
+  console.log(`💚 [HEALTH CHECK] ${now} - Node Runner is healthy`);
+
   res.send("Node Runner is healthy");
 });
 
@@ -63,6 +69,8 @@ app.get("/run", async (req, res) => {
       const logContent = `STDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
       await uploadLog(logKey, logContent);
 
+      console.log(`📝 [RUN DONE] stdout: ${stdout.trim()} | stderr: ${stderr.trim()}`);
+
       res.json({
         stdout,
         stderr,
@@ -70,6 +78,7 @@ app.get("/run", async (req, res) => {
       });
     });
   } catch (err) {
+    console.error("❌ Error executing run:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
