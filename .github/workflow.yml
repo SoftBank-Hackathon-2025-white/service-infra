@@ -1,62 +1,49 @@
-name: Build and Push Runners to ECR
+name: Build & Push Runners
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
     paths:
       - "python-runner/**"
       - "node-runner/**"
-  workflow_dispatch:
+      - ".github/**"
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
 
-    env:
-      AWS_REGION: ap-northeast-2
-      AWS_ACCOUNT_ID: 418295722497
-      PYTHON_IMAGE_REPO: softbank/python-runner
-      NODE_IMAGE_REPO: softbank/node-runner
-
     steps:
-      # 1. 소스 체크아웃
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Checkout
+      uses: actions/checkout@v3
 
-      # 2. AWS 자격증명 설정 (GitHub Secrets 사용)
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ap-northeast-2
 
-      # 3. ECR 로그인
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
 
-      # ======================
-      # Python Runner Build
-      # ======================
-      - name: Build & Push Python Runner
-        if: contains(github.event.head_commit.message, 'python') || 
-            contains(join(github.event.commits.*.modified, ','), 'python-runner') ||
-            contains(join(github.event.commits.*.added, ','), 'python-runner')
-        run: |
-          IMAGE_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PYTHON_IMAGE_REPO}:latest
-          echo "📌 Building Python Runner → $IMAGE_URI"
-          docker build -t $IMAGE_URI python-runner/
-          docker push $IMAGE_URI
+    # ============================
+    # Python Runner Build & Push
+    # ============================
+    - name: Build & Push Python Runner
+      if: contains(join(github.event.commits.*.modified), 'python-runner')
+      run: |
+        IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/softbank/python-runner:latest
+        docker build -t python-runner ./python-runner
+        docker tag python-runner:latest $IMAGE_URI
+        docker push $IMAGE_URI
 
-      # ======================
-      # Node Runner Build
-      # ======================
-      - name: Build & Push Node Runner
-        if: contains(github.event.head_commit.message, 'node') || 
-            contains(join(github.event.commits.*.modified, ','), 'node-runner') ||
-            contains(join(github.event.commits.*.added, ','), 'node-runner')
-        run: |
-          IMAGE_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${NODE_IMAGE_REPO}:latest
-          echo "📌 Building Node Runner → $IMAGE_URI"
-          docker build -t $IMAGE_URI node-runner/
-          docker push $IMAGE_URI
+    # ============================
+    # Node Runner Build & Push
+    # ============================
+    - name: Build & Push Node Runner
+      if: contains(join(github.event.commits.*.modified), 'node-runner')
+      run: |
+        IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/softbank/node-runner:latest
+        docker build -t node-runner ./node-runner
+        docker tag node-runner:latest $IMAGE_URI
+        docker push $IMAGE_URI
