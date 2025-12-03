@@ -1,14 +1,11 @@
-FROM python:3.10-slim
+FROM node:18-slim
 
 WORKDIR /runner
 
-# 필요한 패키지 설치
-RUN pip install boto3
+COPY app.js .
 
-# 실행 스크립트 복사
-COPY app.py /runner/app.py
+RUN npm init -y && npm install express aws-sdk
 
-# Health Port 노출
 EXPOSE 8080
 
-CMD ["python", "app.py"]
+CMD ["node", "app.js"]

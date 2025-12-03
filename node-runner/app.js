@@ -1,63 +1,79 @@
-const { exec } = require("child_process");
-const fs = require("fs");
+const express = require("express");
 const AWS = require("aws-sdk");
+const fs = require("fs");
 const path = require("path");
+const { exec } = require("child_process");
+
+const app = express();
+const port = 8080;
+
+// 환경변수
+const CODE_BUCKET = process.env.CODE_BUCKET;
+const LOG_BUCKET = process.env.LOG_BUCKET;
+const AWS_REGION = process.env.AWS_REGION;
+
+AWS.config.update({ region: AWS_REGION });
 const s3 = new AWS.S3();
-const { v4: uuidv4 } = require("uuid");
 
-/**
- * S3에서 파일 다운로드 + 원본 파일명 그대로 저장
- */
-async function download(bucket, key) {
-  // key에서 파일명 추출 (예: "users/123/code.js" → "code.js")
-  const originalFilename = path.basename(key);
+app.get("/health", (req, res) => {
+  res.send("Node Runner is healthy");
+});
 
-  // /runner/<원본파일명>
-  const filePath = `/runner/${originalFilename}`;
+// S3에서 JS 코드 다운로드
+async function downloadCode(bucket, key) {
+  const localPath = `/tmp/${path.basename(key)}`;
+  const file = fs.createWriteStream(localPath);
 
-  const data = await s3.getObject({ Bucket: bucket, Key: key }).promise();
-
-  fs.writeFileSync(filePath, data.Body.toString());
-
-  return filePath;
-}
-
-/**
- * Node.js 코드 실행
- */
-function execute(filePath) {
-  return new Promise(resolve => {
-    exec(`node ${filePath}`, { timeout: 15000 }, (err, stdout, stderr) => {
-      resolve({ stdout, stderr });
-    });
+  const params = { Bucket: bucket, Key: key };
+  return new Promise((resolve, reject) => {
+    s3.getObject(params)
+      .createReadStream()
+      .pipe(file)
+      .on("close", () => resolve(localPath))
+      .on("error", reject);
   });
 }
 
-/**
- * 로그 업로드
- */
-async function uploadLog(bucket, content) {
-  const key = `logs/${uuidv4()}.txt`;
-
-  await s3.putObject({
-    Bucket: bucket,
+// S3에 로그 저장
+async function uploadLog(key, content) {
+  const params = {
+    Bucket: LOG_BUCKET,
     Key: key,
-    Body: content
-  }).promise();
+    Body: content,
+    ContentType: "text/plain",
+  };
+  await s3.putObject(params).promise();
 }
 
-/**
- * 메인 처리 흐름
- */
-(async () => {
-  const bucket = process.env.CODE_BUCKET;
-  const key = process.env.CODE_KEY;
-  const logBucket = process.env.LOG_BUCKET;
+// 실행 핸들러
+app.get("/run", async (req, res) => {
+  const codeKey = req.query.code_key;
+  if (!codeKey) {
+    return res.status(400).json({ error: "Missing code_key" });
+  }
 
-  const file = await download(bucket, key);
-  const { stdout, stderr } = await execute(file);
+  try {
+    const localPath = await downloadCode(CODE_BUCKET, codeKey);
+    const command = `node ${localPath}`;
 
-  const logContent = `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`;
+    exec(command, async (error, stdout, stderr) => {
+      const logId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const logKey = `logs/${logId}.txt`;
 
-  await uploadLog(logBucket, logContent);
-})();
+      const logContent = `STDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
+      await uploadLog(logKey, logContent);
+
+      res.json({
+        stdout,
+        stderr,
+        log_key: logKey,
+      });
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`🚀 Node Runner listening on port ${port}`);
+});
