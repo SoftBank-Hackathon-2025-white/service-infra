@@ -5,7 +5,7 @@ const path = require("path");
 const { exec } = require("child_process");
 
 const app = express();
-const port = 8080;
+const port = 3000;
 
 // 환경변수
 const CODE_BUCKET = process.env.CODE_BUCKET;
