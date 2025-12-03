@@ -6,6 +6,6 @@ COPY app.js .
 
 RUN npm init -y && npm install express aws-sdk
 
-EXPOSE 8080
+EXPOSE 3000
 
 CMD ["node", "app.js"]
