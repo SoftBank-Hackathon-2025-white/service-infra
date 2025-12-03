@@ -3,17 +3,24 @@ import boto3
 import os
 import uuid
 import pathlib
+from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 
 s3 = boto3.client("s3")
 
+# -----------------------------
+# S3에서 코드 다운로드
+# -----------------------------
 def download_user_code(bucket, key):
     filename = pathlib.Path(key).name
     local_path = f"/runner/{filename}"
     s3.download_file(bucket, key, local_path)
     return local_path
 
+# -----------------------------
+# 코드 실행
+# -----------------------------
 def execute_code(path):
     result = subprocess.run(
         ["python3", path],
@@ -24,59 +31,79 @@ def execute_code(path):
     )
     return result.stdout, result.stderr
 
-def upload_log(bucket, log_key, content):
+# -----------------------------
+# 로그 업로드
+# -----------------------------
+def upload_log(bucket, content):
+    log_key = f"logs/{uuid.uuid4()}.txt"
     s3.put_object(
         Bucket=bucket,
         Key=log_key,
         Body=content.encode("utf-8")
     )
-
-def handler():
-    bucket = os.getenv("CODE_BUCKET")
-    code_key = os.getenv("CODE_KEY")
-    log_bucket = os.getenv("LOG_BUCKET")
-
-    if not bucket or not code_key or not log_bucket:
-        print("⚠️ 환경변수(CODE_BUCKET, CODE_KEY, LOG_BUCKET) 미설정")
-        return
-
-    path = download_user_code(bucket, code_key)
-    stdout, stderr = execute_code(path)
-
-    log = f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-    upload_log(log_bucket, f"logs/{uuid.uuid4()}.txt", log)
-
-    print("🎉 Code Executed Successfully!")
+    return log_key
 
 
-# -----------------------------
-# HTTP /health 서버 구현 부분
-# -----------------------------
+# ============================================================================
+# HTTP 서버 핸들러
+# ============================================================================
 class Handler(BaseHTTPRequestHandler):
+
     def do_GET(self):
-        if self.path == "/health":
+
+        if self.path.startswith("/health"):
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"RUNNER READY")
+            return
+
+        if self.path.startswith("/run"):
+            query = parse_qs(urlparse(self.path).query)
+            code_key = query.get("code_key", [None])[0]
+
+            if code_key is None:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Missing code_key parameter")
+                return
+
+            bucket = os.getenv("CODE_BUCKET")
+            log_bucket = os.getenv("LOG_BUCKET")
+
+            try:
+                path = download_user_code(bucket, code_key)
+                stdout, stderr = execute_code(path)
+
+                # 로그 저장
+                log_txt = f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
+                log_key = upload_log(log_bucket, log_txt)
+
+                # 응답
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                response = f'{{"stdout": "{stdout}", "stderr": "{stderr}", "log_key": "{log_key}"}}'
+                self.wfile.write(response.encode("utf-8"))
+
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(str(e).encode("utf-8"))
+
         else:
             self.send_response(404)
             self.end_headers()
 
 
-def start_health_server():
-    port = int(os.getenv("HEALTH_PORT", "8080"))
+# ============================================================================
+# 서버 시동
+# ============================================================================
+def start_server():
+    port = int(os.getenv("PORT", "8080"))
     server = HTTPServer(("", port), Handler)
-    print(f"🚀 Health Check Server running on port {port}")
+    print(f"🚀 Execution Engine HTTP Server running on port {port}")
     server.serve_forever()
 
 
-# -----------------------------
-# 메인 실행
-# -----------------------------
 if __name__ == "__main__":
-    # 헬스 서버 별도 스레드 실행
-    threading.Thread(target=start_health_server, daemon=True).start()
-
-    # 실행 핸들러 시작
-    handler()
+    start_server()
