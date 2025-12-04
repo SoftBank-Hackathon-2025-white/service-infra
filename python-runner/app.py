@@ -3,9 +3,10 @@ import boto3
 import os
 import uuid
 import pathlib
+import time
+import psutil
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
 
 s3 = boto3.client("s3")
 
@@ -22,6 +23,9 @@ def download_user_code(bucket, key):
 # 코드 실행
 # -----------------------------
 def execute_code(path):
+    proc = psutil.Process()
+
+    start_time = time.time()
     result = subprocess.run(
         ["python3", path],
         stdout=subprocess.PIPE,
@@ -29,7 +33,15 @@ def execute_code(path):
         text=True,
         timeout=15
     )
-    return result.stdout, result.stderr
+    end_time = time.time()
+
+    exec_time_ms = int((end_time - start_time) * 1000)
+
+    # CPU/메모리 측정
+    cpu_percent = proc.cpu_percent()
+    memory_mb = proc.memory_info().rss / (1024 * 1024)
+
+    return result.stdout, result.stderr, exec_time_ms, cpu_percent, memory_mb
 
 # -----------------------------
 # 로그 업로드
@@ -72,18 +84,27 @@ class Handler(BaseHTTPRequestHandler):
 
             try:
                 path = download_user_code(bucket, code_key)
-                stdout, stderr = execute_code(path)
+                stdout, stderr, exec_time_ms, cpu_percent, memory_mb = execute_code(path)
 
                 # 로그 저장
                 log_txt = f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
                 log_key = upload_log(log_bucket, log_txt)
 
                 # 응답
+                response = {
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "log_key": log_key,
+                    "execution_time_ms": exec_time_ms,
+                    "cpu_percent": cpu_percent,
+                    "memory_mb": memory_mb,
+                    "code_key": code_key
+                }
+
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                response = f'{{"stdout": "{stdout}", "stderr": "{stderr}", "log_key": "{log_key}"}}'
-                self.wfile.write(response.encode("utf-8"))
+                self.wfile.write(str(response).encode("utf-8"))
 
             except Exception as e:
                 self.send_response(500)
@@ -95,9 +116,6 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
-# ============================================================================
-# 서버 시동
-# ============================================================================
 def start_server():
     port = int(os.getenv("PORT", "8080"))
     server = HTTPServer(("", port), Handler)
