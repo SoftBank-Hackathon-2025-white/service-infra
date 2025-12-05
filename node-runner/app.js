@@ -15,9 +15,9 @@ const AWS_REGION = process.env.AWS_REGION;
 AWS.config.update({ region: AWS_REGION });
 const s3 = new AWS.S3();
 
-// --------------------------------
+// ------------------------------
 // 헬스체크
-// --------------------------------
+// ------------------------------
 app.get("/health", (req, res) => {
   console.log(`💚 [HEALTH] ${new Date().toISOString()}`);
   res.send("Node Runner is healthy");
@@ -66,21 +66,32 @@ app.get("/node/run", async (req, res) => {
     const localPath = await downloadCode(CODE_BUCKET, codeKey);
     const command = `node ${localPath}`;
 
+    // 실행 시작 CPU/Memory 기준점
     const start = Date.now();
     const cpuStart = process.cpuUsage();
+    const memStart = process.memoryUsage().rss;
 
     exec(command, async (error, stdout, stderr) => {
+      // 실행 끝
       const end = Date.now();
       const cpuEnd = process.cpuUsage(cpuStart);
+      const memEnd = process.memoryUsage().rss;
 
       const execTimeMs = end - start;
       const cpuPercent = ((cpuEnd.user + cpuEnd.system) / 1000).toFixed(2);
-      const memoryMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(2);
+      const memoryMb = (memEnd / 1024 / 1024).toFixed(2);
 
       const logId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const logKey = `logs/${logId}.txt`;
 
-      await uploadLog(logKey, `STDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`);
+      await uploadLog(
+        logKey,
+        `STDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\n` +
+        `execution_time_ms: ${execTimeMs}\n` +
+        `cpu_percent: ${cpuPercent}\n` +
+        `memory_mb: ${memoryMb}\n` +
+        `code_key: ${codeKey}\n`
+      );
 
       res.json({
         stdout,
@@ -93,6 +104,7 @@ app.get("/node/run", async (req, res) => {
       });
     });
   } catch (err) {
+    console.error("❌ Error executing run:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
