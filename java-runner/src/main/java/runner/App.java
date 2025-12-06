@@ -4,6 +4,8 @@ import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
 
 import java.io.*;
+import java.lang.management.ManagementFactory;
+import java.lang.management.OperatingSystemMXBean;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.file.Files;
@@ -27,6 +29,9 @@ public class App {
             .region(Region.of(AWS_REGION))
             .build();
 
+    private static final String JAVA_FILE = "/runner/Main.java";
+    private static final String CLASS_FILE = "/runner/Main.class";
+
     public static void main(String[] args) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress(8090), 0);
 
@@ -35,7 +40,6 @@ public class App {
 
         server.setExecutor(Executors.newFixedThreadPool(4));
         System.out.println("🚀 Java Runner started on port 8090");
-
         server.start();
     }
 
@@ -53,110 +57,60 @@ public class App {
             return;
         }
 
-        JSONObject json = new JSONObject();
-        long startTime = System.currentTimeMillis();
-
         try {
-            // 랜덤 파일명 생성
-            String tempBase = "Main_" + UUID.randomUUID();
-            String tempJavaFile = "/runner/" + tempBase + ".java";
-            String tempClassName = tempBase;
-            String tempClassFile = "/runner/" + tempClassName + ".class";
+            // always save to Main.java
+            downloadCode(CODE_BUCKET, codeKey, JAVA_FILE);
 
-            downloadCode(CODE_BUCKET, codeKey, tempJavaFile);
-
-            // CPU/Memory: 시작 시점 측정
-            long cpuStart = readCpuStat();
-            long memBefore = readMemoryUsageMB();
+            long start = System.currentTimeMillis();
 
             // compile
-            Process compile = new ProcessBuilder("javac", tempJavaFile).start();
+            Process compile = new ProcessBuilder("javac", JAVA_FILE).start();
             compile.waitFor();
 
             // run
-            Process run = new ProcessBuilder("java", "-cp", "/runner", tempClassName)
+            Process run = new ProcessBuilder("java", "-cp", "/runner", "Main")
                     .redirectErrorStream(true)
                     .start();
 
             BufferedReader br = new BufferedReader(new InputStreamReader(run.getInputStream()));
             StringBuilder output = new StringBuilder();
+
             String line;
             while ((line = br.readLine()) != null)
                 output.append(line).append("\n");
 
             int exitCode = run.waitFor();
-            long endTime = System.currentTimeMillis();
+            long end = System.currentTimeMillis();
 
-            // CPU/Memory: 종료 시점 측정
-            long cpuEnd = readCpuStat();
-            double cpuPercent = calculateCpuPercent(cpuStart, cpuEnd, endTime - startTime);
-            long memAfter = readMemoryUsageMB();
+            double memoryMB = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1024.0
+                    / 1024.0;
+            double cpuPercent = 0.0; // simple placeholder
 
-            json.put("stdout", output.toString());
-            json.put("stderr", exitCode == 0 ? "" : "Runtime error");
-            json.put("execution_time_ms", endTime - startTime);
-            json.put("cpu_percent", cpuPercent);
-            json.put("memory_mb", memAfter);
-            json.put("code_key", codeKey);
+            JSONObject result = new JSONObject();
+            result.put("stdout", output.toString());
+            result.put("stderr", exitCode == 0 ? "" : "Runtime error");
+            result.put("execution_time_ms", end - start);
+            result.put("cpu_percent", cpuPercent);
+            result.put("memory_mb", memoryMB);
+            result.put("code_key", codeKey);
 
-            // 로그 저장
-            String logKey = uploadLogJson(json);
-            json.put("log_key", logKey);
+            String logKey = uploadLogJson(result);
+            result.put("log_key", logKey);
 
-            // temp 파일 삭제
-            tryDelete(tempJavaFile);
-            tryDelete(tempClassFile);
+            // cleanup
+            tryDelete(JAVA_FILE);
+            tryDelete(CLASS_FILE);
 
-            sendJson(exchange, json);
+            sendJson(exchange, result);
 
         } catch (Exception e) {
-            json.put("error", e.getMessage());
-            sendJson(exchange, json, 500);
+            sendJson(exchange, new JSONObject().put("error", e.getMessage()), 500);
         }
-    }
-
-    private static long readCpuStat() {
-        try {
-            BufferedReader reader = new BufferedReader(new FileReader("/proc/stat"));
-            String line = reader.readLine(); // 첫 번째 줄: cpu ...
-            reader.close();
-            String[] parts = line.split("\\s+");
-            long user = Long.parseLong(parts[1]);
-            long nice = Long.parseLong(parts[2]);
-            long system = Long.parseLong(parts[3]);
-            long idle = Long.parseLong(parts[4]);
-            return user + nice + system + idle;
-        } catch (Exception e) {
-            return 0;
-        }
-    }
-
-    private static double calculateCpuPercent(long start, long end, long elapsedMs) {
-        if (elapsedMs <= 0)
-            return 0.0;
-        return (double) (end - start) / (elapsedMs * 100.0);
-    }
-
-    private static long readMemoryUsageMB() {
-        try {
-            BufferedReader reader = new BufferedReader(new FileReader("/proc/self/status"));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.startsWith("VmRSS:")) {
-                    String[] parts = line.split("\\s+");
-                    return Long.parseLong(parts[1]) / 1024; // kB → MB
-                }
-            }
-            reader.close();
-        } catch (Exception ignored) {
-        }
-        return 0;
     }
 
     private static void downloadCode(String bucket, String key, String localPath) {
-        s3.getObject(
-                GetObjectRequest.builder().bucket(bucket).key(key).build(),
-                java.nio.file.Paths.get(localPath));
+        GetObjectRequest req = GetObjectRequest.builder().bucket(bucket).key(key).build();
+        s3.getObject(req, java.nio.file.Paths.get(localPath));
     }
 
     private static void tryDelete(String path) {
@@ -168,24 +122,21 @@ public class App {
 
     private static String uploadLogJson(JSONObject json) {
         String key = "logs/" + UUID.randomUUID() + ".json";
-        s3.putObject(
-                PutObjectRequest.builder()
-                        .bucket(LOG_BUCKET)
-                        .key(key)
-                        .contentType("application/json")
-                        .build(),
-                RequestBody.fromString(json.toString()));
+
+        PutObjectRequest put = PutObjectRequest.builder()
+                .bucket(LOG_BUCKET)
+                .key(key)
+                .contentType("application/json")
+                .build();
+
+        s3.putObject(put, RequestBody.fromString(json.toString()));
         return key;
     }
 
     private static void sendJson(HttpExchange ex, JSONObject json) throws IOException {
-        sendJson(ex, json, 200);
-    }
-
-    private static void sendJson(HttpExchange ex, JSONObject json, int status) throws IOException {
-        byte[] data = json.toString().getBytes();
-        ex.sendResponseHeaders(status, data.length);
-        ex.getResponseBody().write(data);
+        byte[] response = json.toString().getBytes();
+        ex.sendResponseHeaders(200, response.length);
+        ex.getResponseBody().write(response);
         ex.getResponseBody().close();
     }
 
@@ -193,8 +144,9 @@ public class App {
         Map<String, String> map = new HashMap<>();
         if (query == null)
             return map;
-        for (String p : query.split("&")) {
-            String[] pair = p.split("=");
+
+        for (String param : query.split("&")) {
+            String[] pair = param.split("=");
             if (pair.length > 1)
                 map.put(pair[0], pair[1]);
         }
