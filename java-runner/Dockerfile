@@ -15,7 +15,7 @@ WORKDIR /runner
 
 RUN yum install -y unzip wget
 
-COPY --from=build /app/target/java-runner.jar /runner/java-runner.jar
+COPY --from=build /app/target/java-runner-1.0.0.jar /runner/java-runner.jar
 
 EXPOSE 8090
 
