@@ -1,4 +1,4 @@
-package java-runner;
+package runner;
 
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
