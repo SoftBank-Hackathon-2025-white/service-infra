@@ -1,3 +1,5 @@
+package java-runner;
+
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
 
@@ -12,6 +14,7 @@ import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsPro
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.*;
 import software.amazon.awssdk.services.s3.model.*;
+import software.amazon.awssdk.core.sync.RequestBody;
 
 import org.json.JSONObject;
 
@@ -27,13 +30,14 @@ public class App {
             .build();
 
     public static void main(String[] args) throws Exception {
-        HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress(8090), 0);
 
         server.createContext("/health", App::healthCheck);
         server.createContext("/java/run", App::runJavaCode);
 
         server.setExecutor(Executors.newFixedThreadPool(4));
-        System.out.println("🚀 Java Runner started on port 8080");
+        System.out.println("🚀 Java Runner started on port 8090");
+
         server.start();
     }
 
@@ -52,35 +56,36 @@ public class App {
         }
 
         try {
-            String downloadedPath = downloadCode(CODE_BUCKET, codeKey);
+            String path = downloadCode(CODE_BUCKET, codeKey);
+
             String className = "Main";
 
             long start = System.currentTimeMillis();
 
-            // Compile
-            Process compile = new ProcessBuilder("javac", downloadedPath).start();
+            // compile
+            Process compile = new ProcessBuilder("javac", path).start();
             compile.waitFor();
 
-            // Run
+            // run
             Process run = new ProcessBuilder("java", "-cp", "/runner", className)
                     .redirectErrorStream(true)
                     .start();
 
-            BufferedReader reader = new BufferedReader(new InputStreamReader(run.getInputStream()));
+            BufferedReader br = new BufferedReader(new InputStreamReader(run.getInputStream()));
             StringBuilder output = new StringBuilder();
             String line;
 
-            while ((line = reader.readLine()) != null)
+            while ((line = br.readLine()) != null) {
                 output.append(line).append("\n");
+            }
 
             int exitCode = run.waitFor();
-
             long end = System.currentTimeMillis();
 
             JSONObject result = new JSONObject();
             result.put("stdout", output.toString());
             result.put("stderr", exitCode == 0 ? "" : "Runtime error");
-            result.put("execution_time_ms", end - start);
+            result.put("execution_time_ms", (end - start));
             result.put("code_key", codeKey);
 
             String logKey = uploadLogJson(result);
@@ -95,16 +100,16 @@ public class App {
 
     private static String downloadCode(String bucket, String key) throws IOException {
         String filename = key.substring(key.lastIndexOf("/") + 1);
-        String localPath = "/runner/" + filename;
+        String path = "/runner/" + filename;
 
-        GetObjectRequest request = GetObjectRequest.builder()
+        GetObjectRequest req = GetObjectRequest.builder()
                 .bucket(bucket)
                 .key(key)
                 .build();
 
-        s3.getObject(request, java.nio.file.Paths.get(localPath));
+        s3.getObject(req, java.nio.file.Paths.get(path));
 
-        return localPath;
+        return path;
     }
 
     private static String uploadLogJson(JSONObject json) {
@@ -116,24 +121,25 @@ public class App {
                 .contentType("application/json")
                 .build();
 
-        s3.putObject(put, RequestBody.fromString(json.toString(2)));
+        s3.putObject(put, RequestBody.fromString(json.toString()));
 
         return key;
     }
 
-    private static void sendJson(HttpExchange exchange, JSONObject json) throws IOException {
-        sendJson(exchange, json, 200);
+    private static void sendJson(HttpExchange ex, JSONObject json) throws IOException {
+        sendJson(ex, json, 200);
     }
 
-    private static void sendJson(HttpExchange exchange, JSONObject json, int status) throws IOException {
-        byte[] bytes = json.toString().getBytes();
-        exchange.sendResponseHeaders(status, bytes.length);
-        exchange.getResponseBody().write(bytes);
-        exchange.getResponseBody().close();
+    private static void sendJson(HttpExchange ex, JSONObject json, int status) throws IOException {
+        byte[] response = json.toString().getBytes();
+        ex.sendResponseHeaders(status, response.length);
+        ex.getResponseBody().write(response);
+        ex.getResponseBody().close();
     }
 
     private static Map<String, String> queryToMap(String query) {
         Map<String, String> map = new HashMap<>();
+
         if (query == null)
             return map;
 
