@@ -1,19 +1,11 @@
-FROM maven:3.9.6-eclipse-temurin-17 AS build
-
-WORKDIR /app
-
-COPY pom.xml .
-COPY src ./src
-
-RUN mvn -q package -DskipTests
-
-FROM eclipse-temurin:17-jre
+FROM node:18-slim
 
 WORKDIR /runner
 
-# fat-jar 복사
-COPY --from=build /app/target/java-runner-1.0.0-jar-with-dependencies.jar /runner/java-runner.jar
+COPY app.js .
 
-EXPOSE 8090
+RUN npm init -y && npm install express aws-sdk
 
-CMD ["java", "-jar", "/runner/java-runner.jar"]
+EXPOSE 3000
+
+CMD ["node", "app.js"]
