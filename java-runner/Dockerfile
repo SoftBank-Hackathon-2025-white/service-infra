@@ -1,17 +1,30 @@
-FROM amazoncorretto:17
+# =========================
+# 1) Build Stage (Maven)
+# =========================
+FROM maven:3.9.6-eclipse-temurin-17 AS builder
+
+WORKDIR /app
+
+# Copy pom.xml and download dependencies first (cache layer)
+COPY pom.xml .
+RUN mvn -q dependency:resolve
+
+# Copy source code
+COPY src ./src
+
+# Build JAR
+RUN mvn -q package -DskipTests
+
+# =========================
+# 2) Runtime Stage
+# =========================
+FROM eclipse-temurin:17-jre
 
 WORKDIR /runner
 
-# Install AWS SDK (Java) + JSON lib
-RUN yum install -y unzip wget && \
-    wget https://repo1.maven.org/maven2/org/json/json/20211205/json-20211205.jar -O /runner/json.jar && \
-    wget https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.20.40/bundle-2.20.40.jar -O /runner/aws.jar
-
-COPY app.java /runner/app.java
-
-# Compile main runner code
-RUN javac -cp .:json.jar:aws.jar app.java
+# Copy built executable JAR from the builder
+COPY --from=builder /app/target/java-runner.jar /runner/java-runner.jar
 
 EXPOSE 8080
 
-CMD ["java", "-cp", "/runner:json.jar:aws.jar", "App"]
+CMD ["java", "-jar", "/runner/java-runner.jar"]

@@ -24,13 +24,11 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ap-northeast-2
 
-    - name: Login to Amazon ECR
+    - name: Login to ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    # ============================
-    # Python Runner Build & Push
-    # ============================
+    # Python Runner
     - name: Build & Push Python Runner
       run: |
         IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/softbank/python-runner:latest
@@ -38,9 +36,7 @@ jobs:
         docker tag python-runner:latest $IMAGE_URI
         docker push $IMAGE_URI
 
-    # ============================
-    # Node Runner Build & Push
-    # ============================
+    # Node Runner
     - name: Build & Push Node Runner
       run: |
         IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/softbank/node-runner:latest
@@ -48,9 +44,7 @@ jobs:
         docker tag node-runner:latest $IMAGE_URI
         docker push $IMAGE_URI
 
-    # ============================
-    # Java Runner Build & Push
-    # ============================
+    # Java Runner
     - name: Build & Push Java Runner
       run: |
         IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/softbank/java-runner:latest
