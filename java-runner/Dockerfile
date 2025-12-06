@@ -12,6 +12,7 @@ RUN mvn -q package -DskipTests
 FROM amazoncorretto:17
 
 WORKDIR /runner
+RUN mkdir -p /runner && chmod -R 777 /runner
 
 RUN yum install -y unzip wget
 
