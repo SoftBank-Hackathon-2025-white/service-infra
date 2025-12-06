@@ -25,6 +25,6 @@ WORKDIR /runner
 # Copy built executable JAR from the builder
 COPY --from=builder /app/target/java-runner.jar /runner/java-runner.jar
 
-EXPOSE 8080
+EXPOSE 8090
 
 CMD ["java", "-jar", "/runner/java-runner.jar"]
