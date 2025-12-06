@@ -26,7 +26,6 @@ public class App {
 
     private static final S3Client s3 = S3Client.builder()
             .region(Region.of(AWS_REGION))
-            .credentialsProvider(EnvironmentVariableCredentialsProvider.create())
             .build();
 
     public static void main(String[] args) throws Exception {
