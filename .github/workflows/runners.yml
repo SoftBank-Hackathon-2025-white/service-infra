@@ -46,3 +46,62 @@ jobs:
         docker build -t node-runner ./node-runner
         docker tag node-runner:latest $IMAGE_URI
         docker push $IMAGE_URI
+name: Build & Push Runners
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "python-runner/**"
+      - "node-runner/**"
+      - "java-runner/**"
+      - ".github/**"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ap-northeast-2
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    # ============================
+    # Python Runner Build & Push
+    # ============================
+    - name: Build & Push Python Runner
+      run: |
+        IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/softbank/python-runner:latest
+        docker build -t python-runner ./python-runner
+        docker tag python-runner:latest $IMAGE_URI
+        docker push $IMAGE_URI
+
+    # ============================
+    # Node Runner Build & Push
+    # ============================
+    - name: Build & Push Node Runner
+      run: |
+        IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/softbank/node-runner:latest
+        docker build -t node-runner ./node-runner
+        docker tag node-runner:latest $IMAGE_URI
+        docker push $IMAGE_URI
+
+    # ============================
+    # Java Runner Build & Push
+    # ============================
+    - name: Build & Push Java Runner
+      run: |
+        IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/softbank/java-runner:latest
+        docker build -t java-runner ./java-runner
+        docker tag java-runner:latest $IMAGE_URI
+        docker push $IMAGE_URI
