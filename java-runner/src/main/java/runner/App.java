@@ -10,11 +10,10 @@ import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.Executors;
 
-import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
-import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.*;
 import software.amazon.awssdk.services.s3.model.*;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.regions.Region;
 
 import org.json.JSONObject;
 
@@ -45,8 +44,8 @@ public class App {
     }
 
     private static void runJavaCode(HttpExchange exchange) throws IOException {
-        URI requestURI = exchange.getRequestURI();
-        Map<String, String> params = queryToMap(requestURI.getQuery());
+        URI uri = exchange.getRequestURI();
+        Map<String, String> params = queryToMap(uri.getQuery());
 
         String codeKey = params.get("code_key");
         if (codeKey == null) {
@@ -55,28 +54,28 @@ public class App {
         }
 
         try {
-            String path = downloadCode(CODE_BUCKET, codeKey);
+            // ⚡ 파일 충돌 방지: 항상 랜덤 파일명 생성
+            String tempJavaFile = "/runner/Main_" + UUID.randomUUID() + ".java";
+            String tempClassName = "Main";
 
-            String className = "Main";
+            downloadCode(CODE_BUCKET, codeKey, tempJavaFile);
 
             long start = System.currentTimeMillis();
 
             // compile
-            Process compile = new ProcessBuilder("javac", path).start();
+            Process compile = new ProcessBuilder("javac", tempJavaFile).start();
             compile.waitFor();
 
             // run
-            Process run = new ProcessBuilder("java", "-cp", "/runner", className)
+            Process run = new ProcessBuilder("java", "-cp", "/runner", tempClassName)
                     .redirectErrorStream(true)
                     .start();
 
             BufferedReader br = new BufferedReader(new InputStreamReader(run.getInputStream()));
             StringBuilder output = new StringBuilder();
             String line;
-
-            while ((line = br.readLine()) != null) {
+            while ((line = br.readLine()) != null)
                 output.append(line).append("\n");
-            }
 
             int exitCode = run.waitFor();
             long end = System.currentTimeMillis();
@@ -84,11 +83,15 @@ public class App {
             JSONObject result = new JSONObject();
             result.put("stdout", output.toString());
             result.put("stderr", exitCode == 0 ? "" : "Runtime error");
-            result.put("execution_time_ms", (end - start));
+            result.put("execution_time_ms", end - start);
             result.put("code_key", codeKey);
 
             String logKey = uploadLogJson(result);
             result.put("log_key", logKey);
+
+            // ⚡ temp 파일 정리
+            tryDelete(tempJavaFile);
+            tryDelete("/runner/Main.class");
 
             sendJson(exchange, result);
 
@@ -97,18 +100,20 @@ public class App {
         }
     }
 
-    private static String downloadCode(String bucket, String key) throws IOException {
-        String filename = key.substring(key.lastIndexOf("/") + 1);
-        String path = "/runner/" + filename;
-
+    private static void downloadCode(String bucket, String key, String localPath) {
         GetObjectRequest req = GetObjectRequest.builder()
                 .bucket(bucket)
                 .key(key)
                 .build();
 
-        s3.getObject(req, java.nio.file.Paths.get(path));
+        s3.getObject(req, java.nio.file.Paths.get(localPath));
+    }
 
-        return path;
+    private static void tryDelete(String path) {
+        try {
+            Files.deleteIfExists(java.nio.file.Paths.get(path));
+        } catch (Exception ignored) {
+        }
     }
 
     private static String uploadLogJson(JSONObject json) {
@@ -138,7 +143,6 @@ public class App {
 
     private static Map<String, String> queryToMap(String query) {
         Map<String, String> map = new HashMap<>();
-
         if (query == null)
             return map;
 
@@ -147,7 +151,6 @@ public class App {
             if (pair.length > 1)
                 map.put(pair[0], pair[1]);
         }
-
         return map;
     }
 }
