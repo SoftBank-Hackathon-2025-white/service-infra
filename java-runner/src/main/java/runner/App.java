@@ -4,8 +4,6 @@ import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
 
 import java.io.*;
-import java.lang.management.ManagementFactory;
-import java.lang.management.OperatingSystemMXBean;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.file.Files;
@@ -29,6 +27,7 @@ public class App {
             .region(Region.of(AWS_REGION))
             .build();
 
+    // Always overwrite these files
     private static final String JAVA_FILE = "/runner/Main.java";
     private static final String CLASS_FILE = "/runner/Main.class";
 
@@ -53,63 +52,68 @@ public class App {
 
         String codeKey = params.get("code_key");
         if (codeKey == null) {
-            sendJson(exchange, new JSONObject().put("error", "Missing code_key"), 400);
+            sendJsonWithStatus(exchange, new JSONObject().put("error", "Missing code_key"), 400);
             return;
         }
 
         try {
-            // always save to Main.java
+            // Save user's code to Main.java
             downloadCode(CODE_BUCKET, codeKey, JAVA_FILE);
 
             long start = System.currentTimeMillis();
 
-            // compile
-            Process compile = new ProcessBuilder("javac", JAVA_FILE).start();
+            // Compile
+            Process compile = new ProcessBuilder("javac", JAVA_FILE)
+                    .redirectErrorStream(true)
+                    .start();
             compile.waitFor();
 
-            // run
+            // Run
             Process run = new ProcessBuilder("java", "-cp", "/runner", "Main")
                     .redirectErrorStream(true)
                     .start();
 
             BufferedReader br = new BufferedReader(new InputStreamReader(run.getInputStream()));
             StringBuilder output = new StringBuilder();
-
             String line;
+
             while ((line = br.readLine()) != null)
                 output.append(line).append("\n");
 
             int exitCode = run.waitFor();
             long end = System.currentTimeMillis();
 
-            double memoryMB = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1024.0
-                    / 1024.0;
-            double cpuPercent = 0.0; // simple placeholder
+            double memoryMB = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory())
+                    / 1024.0 / 1024.0;
 
             JSONObject result = new JSONObject();
             result.put("stdout", output.toString());
             result.put("stderr", exitCode == 0 ? "" : "Runtime error");
             result.put("execution_time_ms", end - start);
-            result.put("cpu_percent", cpuPercent);
+            result.put("cpu_percent", 0.0); // placeholder
             result.put("memory_mb", memoryMB);
             result.put("code_key", codeKey);
 
             String logKey = uploadLogJson(result);
             result.put("log_key", logKey);
 
-            // cleanup
+            // Cleanup temp files
             tryDelete(JAVA_FILE);
             tryDelete(CLASS_FILE);
 
             sendJson(exchange, result);
 
         } catch (Exception e) {
-            sendJson(exchange, new JSONObject().put("error", e.getMessage()), 500);
+            sendJsonWithStatus(exchange, new JSONObject().put("error", e.getMessage()), 500);
         }
     }
 
     private static void downloadCode(String bucket, String key, String localPath) {
-        GetObjectRequest req = GetObjectRequest.builder().bucket(bucket).key(key).build();
+        GetObjectRequest req = GetObjectRequest.builder()
+                .bucket(bucket)
+                .key(key)
+                .build();
+
         s3.getObject(req, java.nio.file.Paths.get(localPath));
     }
 
@@ -134,8 +138,12 @@ public class App {
     }
 
     private static void sendJson(HttpExchange ex, JSONObject json) throws IOException {
+        sendJsonWithStatus(ex, json, 200);
+    }
+
+    private static void sendJsonWithStatus(HttpExchange ex, JSONObject json, int status) throws IOException {
         byte[] response = json.toString().getBytes();
-        ex.sendResponseHeaders(200, response.length);
+        ex.sendResponseHeaders(status, response.length);
         ex.getResponseBody().write(response);
         ex.getResponseBody().close();
     }
@@ -150,6 +158,7 @@ public class App {
             if (pair.length > 1)
                 map.put(pair[0], pair[1]);
         }
+
         return map;
     }
 }
