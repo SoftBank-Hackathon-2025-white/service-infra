@@ -8,6 +8,7 @@ import psutil
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+from datetime import datetime
 
 s3 = boto3.client("s3")
 
@@ -32,7 +33,7 @@ def execute_code(path):
 
     exec_time_ms = int((end_time - start_time) * 1000)
 
-    cpu_percent = proc.cpu_percent()
+    cpu_percent = proc.cpu_percent(interval=0.1)
     memory_mb = proc.memory_info().rss / (1024 * 1024)
 
     return result.stdout, result.stderr, exec_time_ms, cpu_percent, memory_mb
@@ -50,22 +51,64 @@ def upload_log_json(bucket, data):
 
 class Handler(BaseHTTPRequestHandler):
 
+    # JSON 응답 유틸리티
+    def _send_json(self, data, status=200):
+        body = json.dumps(data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
 
+        # -------------------------
+        # 헬스체크
+        # -------------------------
         if self.path.startswith("/health"):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"RUNNER READY")
+            self._send_json({"status": "RUNNER READY"})
             return
 
+        # -------------------------
+        # 하드웨어 상태 조회 (/python/status)
+        # -------------------------
+        if self.path.startswith("/python/status"):
+            try:
+                vm = psutil.virtual_memory()
+                cpu_total = psutil.cpu_percent(interval=0.1)
+
+                proc = psutil.Process()
+                proc_cpu = proc.cpu_percent(interval=0.1)
+                proc_mem = proc.memory_info().rss / (1024 * 1024)
+
+                data = {
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "system": {
+                        "cpu_percent": cpu_total,
+                        "memory_total_mb": round(vm.total / (1024 * 1024), 2),
+                        "memory_used_mb": round(vm.used / (1024 * 1024), 2),
+                        "memory_percent": vm.percent,
+                    },
+                    "process": {
+                        "cpu_percent": proc_cpu,
+                        "memory_mb": round(proc_mem, 2),
+                    }
+                }
+
+                self._send_json(data)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
+            return
+
+        # -------------------------
+        # 코드 실행 (/python/run)
+        # -------------------------
         if self.path.startswith("/python/run"):
             query = parse_qs(urlparse(self.path).query)
             code_key = query.get("code_key", [None])[0]
 
-            if code_key is None:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Missing code_key parameter")
+            if not code_key:
+                self._send_json({"error": "Missing code_key parameter"}, status=400)
                 return
 
             bucket = os.getenv("CODE_BUCKET")
@@ -81,25 +124,22 @@ class Handler(BaseHTTPRequestHandler):
                     "execution_time_ms": exec_time_ms,
                     "cpu_percent": cpu_percent,
                     "memory_mb": memory_mb,
-                    "code_key": code_key
+                    "code_key": code_key,
                 }
 
                 log_key = upload_log_json(log_bucket, response_data)
                 response_data["log_key"] = log_key
 
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(response_data).encode("utf-8"))
+                self._send_json(response_data)
 
             except Exception as e:
-                self.send_response(500)
-                self.end_headers()
-                self.wfile.write(str(e).encode("utf-8"))
+                self._send_json({"error": str(e)}, status=500)
+            return
 
-        else:
-            self.send_response(404)
-            self.end_headers()
+        # -------------------------
+        # 404
+        # -------------------------
+        self._send_json({"error": "Not Found"}, status=404)
 
 
 def start_server():
