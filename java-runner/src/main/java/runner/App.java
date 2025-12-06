@@ -53,14 +53,21 @@ public class App {
             return;
         }
 
+        JSONObject json = new JSONObject();
+        long startTime = System.currentTimeMillis();
+
         try {
-            // ⚡ 파일 충돌 방지: 항상 랜덤 파일명 생성
-            String tempJavaFile = "/runner/Main_" + UUID.randomUUID() + ".java";
-            String tempClassName = "Main";
+            // 랜덤 파일명 생성
+            String tempBase = "Main_" + UUID.randomUUID();
+            String tempJavaFile = "/runner/" + tempBase + ".java";
+            String tempClassName = tempBase;
+            String tempClassFile = "/runner/" + tempClassName + ".class";
 
             downloadCode(CODE_BUCKET, codeKey, tempJavaFile);
 
-            long start = System.currentTimeMillis();
+            // CPU/Memory: 시작 시점 측정
+            long cpuStart = readCpuStat();
+            long memBefore = readMemoryUsageMB();
 
             // compile
             Process compile = new ProcessBuilder("javac", tempJavaFile).start();
@@ -78,35 +85,78 @@ public class App {
                 output.append(line).append("\n");
 
             int exitCode = run.waitFor();
-            long end = System.currentTimeMillis();
+            long endTime = System.currentTimeMillis();
 
-            JSONObject result = new JSONObject();
-            result.put("stdout", output.toString());
-            result.put("stderr", exitCode == 0 ? "" : "Runtime error");
-            result.put("execution_time_ms", end - start);
-            result.put("code_key", codeKey);
+            // CPU/Memory: 종료 시점 측정
+            long cpuEnd = readCpuStat();
+            double cpuPercent = calculateCpuPercent(cpuStart, cpuEnd, endTime - startTime);
+            long memAfter = readMemoryUsageMB();
 
-            String logKey = uploadLogJson(result);
-            result.put("log_key", logKey);
+            json.put("stdout", output.toString());
+            json.put("stderr", exitCode == 0 ? "" : "Runtime error");
+            json.put("execution_time_ms", endTime - startTime);
+            json.put("cpu_percent", cpuPercent);
+            json.put("memory_mb", memAfter);
+            json.put("code_key", codeKey);
 
-            // ⚡ temp 파일 정리
+            // 로그 저장
+            String logKey = uploadLogJson(json);
+            json.put("log_key", logKey);
+
+            // temp 파일 삭제
             tryDelete(tempJavaFile);
-            tryDelete("/runner/Main.class");
+            tryDelete(tempClassFile);
 
-            sendJson(exchange, result);
+            sendJson(exchange, json);
 
         } catch (Exception e) {
-            sendJson(exchange, new JSONObject().put("error", e.getMessage()), 500);
+            json.put("error", e.getMessage());
+            sendJson(exchange, json, 500);
         }
     }
 
-    private static void downloadCode(String bucket, String key, String localPath) {
-        GetObjectRequest req = GetObjectRequest.builder()
-                .bucket(bucket)
-                .key(key)
-                .build();
+    private static long readCpuStat() {
+        try {
+            BufferedReader reader = new BufferedReader(new FileReader("/proc/stat"));
+            String line = reader.readLine(); // 첫 번째 줄: cpu ...
+            reader.close();
+            String[] parts = line.split("\\s+");
+            long user = Long.parseLong(parts[1]);
+            long nice = Long.parseLong(parts[2]);
+            long system = Long.parseLong(parts[3]);
+            long idle = Long.parseLong(parts[4]);
+            return user + nice + system + idle;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
 
-        s3.getObject(req, java.nio.file.Paths.get(localPath));
+    private static double calculateCpuPercent(long start, long end, long elapsedMs) {
+        if (elapsedMs <= 0)
+            return 0.0;
+        return (double) (end - start) / (elapsedMs * 100.0);
+    }
+
+    private static long readMemoryUsageMB() {
+        try {
+            BufferedReader reader = new BufferedReader(new FileReader("/proc/self/status"));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("VmRSS:")) {
+                    String[] parts = line.split("\\s+");
+                    return Long.parseLong(parts[1]) / 1024; // kB → MB
+                }
+            }
+            reader.close();
+        } catch (Exception ignored) {
+        }
+        return 0;
+    }
+
+    private static void downloadCode(String bucket, String key, String localPath) {
+        s3.getObject(
+                GetObjectRequest.builder().bucket(bucket).key(key).build(),
+                java.nio.file.Paths.get(localPath));
     }
 
     private static void tryDelete(String path) {
@@ -118,15 +168,13 @@ public class App {
 
     private static String uploadLogJson(JSONObject json) {
         String key = "logs/" + UUID.randomUUID() + ".json";
-
-        PutObjectRequest put = PutObjectRequest.builder()
-                .bucket(LOG_BUCKET)
-                .key(key)
-                .contentType("application/json")
-                .build();
-
-        s3.putObject(put, RequestBody.fromString(json.toString()));
-
+        s3.putObject(
+                PutObjectRequest.builder()
+                        .bucket(LOG_BUCKET)
+                        .key(key)
+                        .contentType("application/json")
+                        .build(),
+                RequestBody.fromString(json.toString()));
         return key;
     }
 
@@ -135,9 +183,9 @@ public class App {
     }
 
     private static void sendJson(HttpExchange ex, JSONObject json, int status) throws IOException {
-        byte[] response = json.toString().getBytes();
-        ex.sendResponseHeaders(status, response.length);
-        ex.getResponseBody().write(response);
+        byte[] data = json.toString().getBytes();
+        ex.sendResponseHeaders(status, data.length);
+        ex.getResponseBody().write(data);
         ex.getResponseBody().close();
     }
 
@@ -145,9 +193,8 @@ public class App {
         Map<String, String> map = new HashMap<>();
         if (query == null)
             return map;
-
-        for (String param : query.split("&")) {
-            String[] pair = param.split("=");
+        for (String p : query.split("&")) {
+            String[] pair = p.split("=");
             if (pair.length > 1)
                 map.put(pair[0], pair[1]);
         }
